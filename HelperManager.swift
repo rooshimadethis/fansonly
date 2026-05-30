@@ -1,0 +1,202 @@
+import Foundation
+
+struct FanInfo: Codable, Identifiable {
+    let index: Int
+    let actual: Float
+    let target: Float
+    let min: Float
+    let max: Float
+    let mode: String
+    
+    var id: Int { index }
+}
+
+struct SMCStatus: Codable {
+    let cpu_temp: Float
+    let gpu_temp: Float
+    let system_temp: Float
+    let fans: [FanInfo]
+}
+
+class HelperManager: ObservableObject {
+    @Published var status: SMCStatus? = nil
+    @Published var isPrivileged: Bool = false
+    @Published var errorMessage: String? = nil
+    
+    private var timer: Timer? = nil
+    private var watchdogProcess: Process? = nil
+    
+    var helperPath: String {
+        return "/usr/local/bin/smc-helper"
+    }
+    
+    var bundleHelperPath: String {
+        let bundlePath = Bundle.main.bundlePath
+        return bundlePath + "/Contents/MacOS/smc-helper"
+    }
+    
+    init() {
+        checkPrivileges()
+        startPolling()
+        startWatchdog()
+    }
+    
+    deinit {
+        stopPolling()
+        stopWatchdog()
+    }
+    
+    func checkPrivileges() {
+        let path = helperPath
+        guard FileManager.default.fileExists(atPath: path) else {
+            isPrivileged = false
+            return
+        }
+        
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            let owner = attrs[.ownerAccountName] as? String
+            let perms = attrs[.posixPermissions] as? NSNumber
+            
+            if let permsVal = perms?.uint16Value, let ownerVal = owner {
+                // Check if owned by root and has setuid bit (0o4000)
+                let hasSetuid = (permsVal & 0o4000) != 0
+                isPrivileged = (ownerVal == "root" && hasSetuid)
+            } else {
+                isPrivileged = false
+            }
+        } catch {
+            isPrivileged = false
+        }
+    }
+    
+    func installPrivileges(completion: @escaping (Bool) -> Void) {
+        let source = bundleHelperPath
+        let dest = helperPath
+        let script = "do shell script \"mkdir -p /usr/local/bin && cp '\(source)' '\(dest)' && chown root '\(dest)' && chmod u+s '\(dest)'\" with administrator privileges"
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let appleScript = NSAppleScript(source: script)
+            var errorInfo: NSDictionary?
+            let result = appleScript?.executeAndReturnError(&errorInfo)
+            
+            DispatchQueue.main.async {
+                if result != nil {
+                    self.checkPrivileges()
+                    self.startWatchdog()
+                    completion(true)
+                } else {
+                    if let errDesc = errorInfo?["NSAppleScriptErrorMessage"] as? String {
+                        self.errorMessage = "Authorization failed: \(errDesc)"
+                    } else {
+                        self.errorMessage = "Permission prompt failed or was cancelled."
+                    }
+                    completion(false)
+                }
+            }
+        }
+    }
+    
+    func startPolling() {
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refreshStatus()
+        }
+        refreshStatus()
+    }
+    
+    func stopPolling() {
+        timer?.invalidate()
+        timer = nil
+    }
+    
+    func refreshStatus() {
+        var path = helperPath
+        if !FileManager.default.fileExists(atPath: path) {
+            path = bundleHelperPath
+        }
+        
+        guard FileManager.default.fileExists(atPath: path) else {
+            self.errorMessage = "smc-helper binary not found at \(path)"
+            return
+        }
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["status"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let statusObj = try? JSONDecoder().decode(SMCStatus.self, from: data) {
+                DispatchQueue.main.async {
+                    self.status = statusObj
+                    self.errorMessage = nil
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Failed to run helper: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func setFanSpeed(index: Int, rpm: Float) {
+        runHelperCommand(args: ["set", String(index), String(Int(rpm))])
+    }
+    
+    func setAutoMode() {
+        runHelperCommand(args: ["auto"])
+    }
+    
+    private func runHelperCommand(args: [String]) {
+        let path = helperPath
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            // Instantly refresh status to update UI
+            refreshStatus()
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Failed to execute command: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func startWatchdog() {
+        stopWatchdog()
+        
+        guard isPrivileged else { return }
+        
+        let path = helperPath
+        let pid = ProcessInfo.processInfo.processIdentifier
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["watchdog", String(pid)]
+        
+        // Run watchdog detached
+        do {
+            try process.run()
+            watchdogProcess = process
+        } catch {
+            print("Failed to start watchdog: \(error)")
+        }
+    }
+    
+    func stopWatchdog() {
+        if let process = watchdogProcess, process.isRunning {
+            process.terminate()
+        }
+        watchdogProcess = nil
+    }
+}
