@@ -218,7 +218,7 @@ struct MenuView: View {
                             fanSpeeds[fan.index] = initialSpeed
                             manager.setFanSpeed(index: fan.index, rpm: initialSpeed)
                         } else {
-                            manager.setAutoMode()
+                            manager.setFanAutoMode(index: fan.index)
                         }
                     }
                 ))

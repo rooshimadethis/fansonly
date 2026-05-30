@@ -35,9 +35,17 @@ Since writes to `AppleSMC` require root privileges, the application utilizes a c
 1. **Get Speeds (No Root Required):**
    `./smc-helper status` -> Output JSON containing fan speeds, target speeds, limits, and temperatures.
 2. **Set Fan Speeds (Root Required):**
-   `sudo ./smc-helper set <fan_index> <rpm>` -> Set manual target speed.
-3. **Set Auto (Root Required):**
-   `sudo ./smc-helper auto` -> Restores automatic system management.
+   `sudo ./smc-helper set <fan_index> <rpm>` -> Set manual target speed. Validates fan index against FNum and clamps RPM to hardware min/max.
+3. **Set Auto — All Fans (Root Required):**
+   `sudo ./smc-helper auto` -> Restores automatic system management for all fans.
+4. **Set Auto — Single Fan (Root Required):**
+   `sudo ./smc-helper auto <fan_index>` -> Restores automatic mode for a single fan.
+5. **Watchdog (Root Required):**
+   `sudo ./smc-helper watchdog <pid>` -> Monitors PID and restores auto mode if process dies.
+
+**Safety:** The `set` command validates fan index bounds (`0 <= idx < FNum`), rejects non-numeric input, and enforces RPM within `[F{idx}Mn, F{idx}Mx]`. All internal buffers use `snprintf`.
+
+**Permissions:** The installed helper uses `chmod 4550` (setuid root, group admin, no world access) and `chown root:admin`.
 
 ---
 

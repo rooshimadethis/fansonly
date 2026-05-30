@@ -10,6 +10,7 @@
 #define kSMCReadKey  5
 #define kSMCWriteKey 6
 #define kSMCGetKeyInfo 9
+#define MAX_FANS 8
 
 typedef struct {
     unsigned char major;
@@ -163,7 +164,7 @@ int main(int argc, char **argv) {
         printf("Usage:\n");
         printf("  %s status           Get JSON info of fans and temperatures\n", argv[0]);
         printf("  %s set <idx> <rpm>  Set fan at index idx to speed in RPM\n", argv[0]);
-        printf("  %s auto             Set all fans to automatic mode\n", argv[0]);
+        printf("  %s auto [idx]       Set all (or one) fan to automatic mode\n", argv[0]);
         printf("  %s watchdog <pid>   Monitor pid and restore auto mode if pid dies\n", argv[0]);
         IOServiceClose(conn);
         return 0;
@@ -173,6 +174,7 @@ int main(int argc, char **argv) {
         // Read Fan Count
         int fan_count = get_ui8_val(conn, "FNum");
         if (fan_count < 0) fan_count = 0;
+        if (fan_count > MAX_FANS) fan_count = MAX_FANS;
         
         // Read CPU Temp (taking maximum of multiple CPU sensors)
         char cpu_keys[][5] = {"Tp01", "Tp05", "Tp09", "Tp0D"};
@@ -198,11 +200,11 @@ int main(int argc, char **argv) {
         printf("  \"fans\": [\n");
         for (int i = 0; i < fan_count; i++) {
             char key_ac[6], key_tg[6], key_mn[6], key_mx[6], key_md[6];
-            sprintf(key_ac, "F%dAc", i);
-            sprintf(key_tg, "F%dTg", i);
-            sprintf(key_mn, "F%dMn", i);
-            sprintf(key_mx, "F%dMx", i);
-            sprintf(key_md, "F%dMd", i);
+            snprintf(key_ac, sizeof(key_ac), "F%dAc", i);
+            snprintf(key_tg, sizeof(key_tg), "F%dTg", i);
+            snprintf(key_mn, sizeof(key_mn), "F%dMn", i);
+            snprintf(key_mx, sizeof(key_mx), "F%dMx", i);
+            snprintf(key_md, sizeof(key_md), "F%dMd", i);
             
             float actual = get_float_val(conn, key_ac);
             float target = get_float_val(conn, key_tg);
@@ -229,15 +231,61 @@ int main(int argc, char **argv) {
             return 1;
         }
         
-        int idx = atoi(argv[2]);
-        float rpm = atof(argv[3]);
+        // Parse fan index with validation
+        char *endptr;
+        errno = 0;
+        long idx_long = strtol(argv[2], &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || idx_long < 0) {
+            printf("{\"error\": \"Invalid fan index: %s\"}\n", argv[2]);
+            IOServiceClose(conn);
+            return 1;
+        }
+        int idx = (int)idx_long;
+        
+        // Validate fan index against hardware fan count
+        int fan_count = get_ui8_val(conn, "FNum");
+        if (fan_count < 0) fan_count = 0;
+        if (fan_count > MAX_FANS) fan_count = MAX_FANS;
+        if (idx >= fan_count) {
+            printf("{\"error\": \"Fan index %d out of range (system has %d fans)\"}\n", idx, fan_count);
+            IOServiceClose(conn);
+            return 1;
+        }
+        
+        // Parse RPM with validation
+        errno = 0;
+        float rpm = strtof(argv[3], &endptr);
+        if (errno != 0 || *endptr != '\0' || rpm != rpm) {
+            printf("{\"error\": \"Invalid RPM value: %s\"}\n", argv[3]);
+            IOServiceClose(conn);
+            return 1;
+        }
+        
+        // Read hardware limits and validate RPM range
+        char key_mn[6], key_mx[6];
+        snprintf(key_mn, sizeof(key_mn), "F%dMn", idx);
+        snprintf(key_mx, sizeof(key_mx), "F%dMx", idx);
+        float hw_min = get_float_val(conn, key_mn);
+        float hw_max = get_float_val(conn, key_mx);
+        
+        if (hw_min <= 0 || hw_max <= 0 || hw_max <= hw_min) {
+            printf("{\"error\": \"Could not read valid speed limits for fan %d\"}\n", idx);
+            IOServiceClose(conn);
+            return 1;
+        }
+        
+        if (rpm < hw_min || rpm > hw_max) {
+            printf("{\"error\": \"RPM %.2f outside valid range [%.0f, %.0f] for fan %d\"}\n", rpm, hw_min, hw_max, idx);
+            IOServiceClose(conn);
+            return 1;
+        }
         
         char key_md[6];
         char key_tg[6];
-        sprintf(key_md, "F%dMd", idx);
-        sprintf(key_tg, "F%dTg", idx);
+        snprintf(key_md, sizeof(key_md), "F%dMd", idx);
+        snprintf(key_tg, sizeof(key_tg), "F%dTg", idx);
         
-        // To write target speed we first set manual mode (F{idx}Md = 1)
+        // Set manual mode first (F{idx}Md = 1)
         kr = set_ui8_val(conn, key_md, 1);
         if (kr != kIOReturnSuccess) {
             printf("{\"error\": \"Failed to write manual mode for fan %d (0x%08x)\"}\n", idx, kr);
@@ -258,17 +306,42 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[1], "auto") == 0) {
         int fan_count = get_ui8_val(conn, "FNum");
         if (fan_count < 0) fan_count = 0;
+        if (fan_count > MAX_FANS) fan_count = MAX_FANS;
         
-        int success_count = 0;
-        for (int i = 0; i < fan_count; i++) {
-            char key_md[6];
-            sprintf(key_md, "F%dMd", i);
-            kr = set_ui8_val(conn, key_md, 0); // Restore auto
-            if (kr == kIOReturnSuccess) {
-                success_count++;
+        if (argc >= 3) {
+            // Single fan auto mode
+            char *endptr;
+            errno = 0;
+            long idx_long = strtol(argv[2], &endptr, 10);
+            if (errno != 0 || *endptr != '\0' || idx_long < 0 || idx_long >= fan_count) {
+                printf("{\"error\": \"Invalid fan index for auto: %s\"}\n", argv[2]);
+                IOServiceClose(conn);
+                return 1;
             }
+            int idx = (int)idx_long;
+            char key_md[6];
+            snprintf(key_md, sizeof(key_md), "F%dMd", idx);
+            kr = set_ui8_val(conn, key_md, 0);
+            if (kr == kIOReturnSuccess) {
+                printf("{\"success\": true, \"message\": \"Fan %d restored to auto mode\"}\n", idx);
+            } else {
+                printf("{\"error\": \"Failed to restore fan %d to auto (0x%08x)\"}\n", idx, kr);
+                IOServiceClose(conn);
+                return 1;
+            }
+        } else {
+            // All fans auto mode
+            int success_count = 0;
+            for (int i = 0; i < fan_count; i++) {
+                char key_md[6];
+                snprintf(key_md, sizeof(key_md), "F%dMd", i);
+                kr = set_ui8_val(conn, key_md, 0);
+                if (kr == kIOReturnSuccess) {
+                    success_count++;
+                }
+            }
+            printf("{\"success\": true, \"message\": \"Restored %d/%d fans to auto mode\"}\n", success_count, fan_count);
         }
-        printf("{\"success\": true, \"message\": \"Restored %d/%d fans to auto mode\"}\n", success_count, fan_count);
     } 
     else if (strcmp(argv[1], "watchdog") == 0) {
         if (argc < 3) {
@@ -276,7 +349,15 @@ int main(int argc, char **argv) {
             IOServiceClose(conn);
             return 1;
         }
-        pid_t parent_pid = (pid_t)atoi(argv[2]);
+        char *endptr;
+        errno = 0;
+        long pid_long = strtol(argv[2], &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || pid_long <= 0) {
+            printf("{\"error\": \"Invalid PID: %s\"}\n", argv[2]);
+            IOServiceClose(conn);
+            return 1;
+        }
+        pid_t parent_pid = (pid_t)pid_long;
         printf("{\"success\": true, \"message\": \"Watchdog started for PID %d\"}\n", parent_pid);
         fflush(stdout);
         
@@ -286,9 +367,10 @@ int main(int argc, char **argv) {
                 // Parent is dead! Revert to auto
                 int fan_count = get_ui8_val(conn, "FNum");
                 if (fan_count < 0) fan_count = 0;
+                if (fan_count > MAX_FANS) fan_count = MAX_FANS;
                 for (int i = 0; i < fan_count; i++) {
                     char key_md[6];
-                    sprintf(key_md, "F%dMd", i);
+                    snprintf(key_md, sizeof(key_md), "F%dMd", i);
                     set_ui8_val(conn, key_md, 0);
                 }
                 break;

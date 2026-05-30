@@ -73,7 +73,19 @@ class HelperManager: ObservableObject {
     func installPrivileges(completion: @escaping (Bool) -> Void) {
         let source = bundleHelperPath
         let dest = helperPath
-        let script = "do shell script \"mkdir -p /usr/local/bin && cp '\(source)' '\(dest)' && chown root '\(dest)' && chmod u+s '\(dest)'\" with administrator privileges"
+        
+        // Validate paths don't contain shell-unsafe characters to prevent injection
+        let unsafeChars = CharacterSet(charactersIn: "'\"\n\\`$")
+        guard source.rangeOfCharacter(from: unsafeChars) == nil,
+              dest.rangeOfCharacter(from: unsafeChars) == nil else {
+            DispatchQueue.main.async {
+                self.errorMessage = "Cannot install: app path contains unsafe characters. Move the app to a safe location."
+            }
+            completion(false)
+            return
+        }
+        
+        let script = "do shell script \"mkdir -p /usr/local/bin && cp '\(source)' '\(dest)' && chown root:admin '\(dest)' && chmod 4550 '\(dest)'\" with administrator privileges"
         
         DispatchQueue.global(qos: .userInitiated).async {
             let appleScript = NSAppleScript(source: script)
@@ -116,31 +128,38 @@ class HelperManager: ObservableObject {
         }
         
         guard FileManager.default.fileExists(atPath: path) else {
-            self.errorMessage = "smc-helper binary not found at \(path)"
+            DispatchQueue.main.async {
+                self.errorMessage = "smc-helper binary not found at \(path)"
+            }
             return
         }
         
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["status"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
+        let resolvedPath = path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: resolvedPath)
+            process.arguments = ["status"]
             
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let statusObj = try? JSONDecoder().decode(SMCStatus.self, from: data) {
-                DispatchQueue.main.async {
-                    self.status = statusObj
-                    self.errorMessage = nil
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            
+            do {
+                try process.run()
+                // Read pipe before waitUntilExit to avoid potential deadlock
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                
+                if let statusObj = try? JSONDecoder().decode(SMCStatus.self, from: data) {
+                    DispatchQueue.main.async {
+                        self?.status = statusObj
+                        self?.errorMessage = nil
+                    }
                 }
-            }
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "Failed to run helper: \(error.localizedDescription)"
+            } catch {
+                DispatchQueue.main.async {
+                    self?.errorMessage = "Failed to run helper: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -153,21 +172,27 @@ class HelperManager: ObservableObject {
         runHelperCommand(args: ["auto"])
     }
     
+    func setFanAutoMode(index: Int) {
+        runHelperCommand(args: ["auto", String(index)])
+    }
+    
     private func runHelperCommand(args: [String]) {
         let path = helperPath
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = args
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = args
             
-            // Instantly refresh status to update UI
-            refreshStatus()
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "Failed to execute command: \(error.localizedDescription)"
+            do {
+                try process.run()
+                process.waitUntilExit()
+                
+                // Refresh status to update UI
+                self?.refreshStatus()
+            } catch {
+                DispatchQueue.main.async {
+                    self?.errorMessage = "Failed to execute command: \(error.localizedDescription)"
+                }
             }
         }
     }
