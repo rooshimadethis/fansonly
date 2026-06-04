@@ -41,7 +41,7 @@ Use manual fan control carefully. Apple's automatic thermal management is still 
 - Xcode Command Line Tools.
 - Administrator access for manual fan control.
 
-This project has SMC notes for an M1 Pro MacBook Pro in [GEMINI.md](GEMINI.md). Other Apple Silicon machines may expose different temperature keys or fan limits.
+This project has SMC notes for an M1 Pro MacBook Pro in [AI_CONTEXT.md](AI_CONTEXT.md). Other Apple Silicon machines may expose different temperature keys or fan limits.
 
 ## Build
 
@@ -119,7 +119,11 @@ MenuView.swift          SwiftUI popover UI and fan controls
 HelperManager.swift     Polling, helper installation, helper command runner
 smc_helper.c            AppleSMC reader/writer and CLI
 build.sh                Local build and app packaging script
-GEMINI.md               Developer SMC reference notes
+install.sh              Local rebuild, install, and relaunch helper
+AI_CONTEXT.md           Canonical project context for AI coding agents
+AGENTS.md               Codex entrypoint that points to AI_CONTEXT.md
+GEMINI.md               Gemini/Antigravity entrypoint that points to AI_CONTEXT.md
+CLAUDE.md               Claude Code entrypoint that points to AI_CONTEXT.md
 ```
 
 ## Feature Ideas
