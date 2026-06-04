@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 
 struct FanInfo: Codable, Identifiable {
     let index: Int
@@ -21,6 +22,7 @@ struct SMCStatus: Codable {
 class HelperManager: ObservableObject {
     @Published var status: SMCStatus? = nil
     @Published var isPrivileged: Bool = false
+    @Published var launchAtLoginEnabled: Bool = false
     @Published var errorMessage: String? = nil
     
     private var timer: Timer? = nil
@@ -37,6 +39,7 @@ class HelperManager: ObservableObject {
     
     init() {
         checkPrivileges()
+        refreshLaunchAtLoginStatus()
         startPolling()
         startWatchdog()
     }
@@ -67,6 +70,46 @@ class HelperManager: ObservableObject {
             }
         } catch {
             isPrivileged = false
+        }
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        if #available(macOS 13.0, *) {
+            updateLaunchAtLoginState()
+        } else {
+            launchAtLoginEnabled = false
+        }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        if #available(macOS 13.0, *) {
+            do {
+                if enabled {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+
+                updateLaunchAtLoginState(showApprovalMessage: true)
+            } catch {
+                refreshLaunchAtLoginStatus()
+                errorMessage = "Failed to update launch at login: \(error.localizedDescription)"
+            }
+        } else {
+            launchAtLoginEnabled = false
+            errorMessage = "Launch at login requires macOS 13 or newer."
+        }
+    }
+
+    @available(macOS 13.0, *)
+    private func updateLaunchAtLoginState(showApprovalMessage: Bool = false) {
+        let status = SMAppService.mainApp.status
+        launchAtLoginEnabled = status == .enabled
+
+        if showApprovalMessage && status == .requiresApproval {
+            errorMessage = "Enable launch at login in System Settings > General > Login Items."
+        } else {
+            errorMessage = nil
         }
     }
     

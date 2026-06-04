@@ -135,29 +135,43 @@ struct MenuView: View {
                 .background(Color.white.opacity(0.1))
             
             // Footer
-            HStack {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(manager.isPrivileged ? Color.green : Color.gray)
-                        .frame(width: 6, height: 6)
-                    Text(manager.isPrivileged ? "Watchdog Active" : "Read-Only Mode")
-                        .font(.system(size: 9))
-                        .foregroundColor(.gray)
-                }
-                
-                Spacer()
-                
-                Button(action: {
-                    manager.stopWatchdog()
-                    manager.setAutoMode()
-                    NSApplication.shared.terminate(nil)
-                }) {
-                    Text("Quit")
+            VStack(spacing: 10) {
+                Toggle(isOn: Binding(
+                    get: { manager.launchAtLoginEnabled },
+                    set: { enabled in
+                        manager.setLaunchAtLogin(enabled)
+                    }
+                )) {
+                    Label("Launch at Login", systemImage: "power")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.gray)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .menuHoverEffect()
+                .toggleStyle(SwitchToggleStyle(tint: .blue))
+
+                HStack {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(manager.isPrivileged ? Color.green : Color.gray)
+                            .frame(width: 6, height: 6)
+                        Text(manager.isPrivileged ? "Watchdog Active" : "Read-Only Mode")
+                            .font(.system(size: 9))
+                            .foregroundColor(.gray)
+                    }
+
+                    Spacer()
+
+                    Button(action: {
+                        manager.stopWatchdog()
+                        manager.setAutoMode()
+                        NSApplication.shared.terminate(nil)
+                    }) {
+                        Text("Quit")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .menuHoverEffect()
+                }
             }
             .padding(.horizontal)
             .padding(.bottom, 12)
@@ -340,4 +354,3 @@ struct HoverModifier: ViewModifier {
             }
     }
 }
-
